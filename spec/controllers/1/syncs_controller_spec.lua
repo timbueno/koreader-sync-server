@@ -138,7 +138,7 @@ describe("SyncsController", function()
 
         it("deletes the user and all progress", function()
             local username, userkey = "user1", "passwd123"
-            local doc1, doc2 = "document-one", "document-two"
+            local doc1, doc2 = "document1", "document2"
             register(username, userkey)
             update(username, userkey, doc1, 0.32, "56", "my kpw")
             update(username, userkey, doc2, 0.64, "112", "my kpw")
@@ -157,13 +157,13 @@ describe("SyncsController", function()
         it("does not treat glob characters in usernames as wildcards", function()
             register("user*one", "password-one")
             register("userXone", "password-two")
-            update("user*one", "password-one", "document-one", 0.32, "56", "device one")
-            update("userXone", "password-two", "document-two", 0.64, "112", "device two")
+            update("user*one", "password-one", "document1", 0.32, "56", "device one")
+            update("userXone", "password-two", "document2", 0.64, "112", "device two")
 
             assert.are.same(200, delete_user("user*one", "password-one").status)
             assert.are.same(200, authorize("userXone", "password-two").status)
-            assert.are.same("document-two",
-                get("userXone", "password-two", "document-two").body.document)
+            assert.are.same("document2",
+                get("userXone", "password-two", "document2").body.document)
         end)
     end)
 
