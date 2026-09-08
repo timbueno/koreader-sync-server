@@ -21,6 +21,26 @@ local SyncsController = {
 
 local null = ngx.null
 
+local delete_user_script = [[
+local cursor = "0"
+local prefix = ARGV[1]
+local keys = {}
+repeat
+    local result = redis.call("SCAN", cursor, "COUNT", 100)
+    cursor = result[1]
+    for _, key in ipairs(result[2]) do
+        if string.sub(key, 1, string.len(prefix)) == prefix then
+            table.insert(keys, key)
+        end
+    end
+until cursor == "0"
+
+for _, key in ipairs(keys) do
+    redis.call("DEL", key)
+end
+return #keys
+]]
+
 -- Whether a field is valid, i.e. not an empty string.
 local function is_valid_field(field)
     return type(field) == "string" and string.len(field) > 0
@@ -86,6 +106,23 @@ end
 
 function SyncsController:create_user_disabled()
     self:raise_error(self.error_user_registration_disabled)
+end
+
+function SyncsController:delete_user()
+    local redis = self:getRedis()
+
+    local username = self:authorize()
+    if not username then
+        self:raise_error(self.error_unauthorized_user)
+    end
+
+    local prefix = "user:" .. username .. ":"
+    local deleted, err = redis:eval(delete_user_script, 0, prefix)
+    if not deleted then
+        self:raise_error(self.error_internal)
+    end
+
+    return 200, { deleted = true }
 end
 
 function SyncsController:get_progress()

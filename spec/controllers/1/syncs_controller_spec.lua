@@ -42,6 +42,20 @@ describe("SyncsController", function()
         return response
     end
 
+    local function delete_user(username, userkey)
+        local response = hit({
+            scheme = "https",
+            method = "DELETE",
+            path = "/users/me",
+            headers = {
+                ["x-auth-user"] = username,
+                ["x-auth-key"] = userkey,
+            },
+        })
+
+        return response
+    end
+
     local function get(username, userkey, document)
         local response = hit({
             scheme = "https",
@@ -108,6 +122,48 @@ describe("SyncsController", function()
             response = authorize(username, userkey)
             assert.are.same(200, response.status)
             assert.are.same("OK", response.body.authorized)
+        end)
+    end)
+
+    describe("#delete", function()
+        it("requires valid credentials", function()
+            local username, userkey = "user1", "passwd123"
+            register(username, userkey)
+
+            local response = delete_user(username, "wrong_password")
+            assert.are.same(401, response.status)
+            assert.are.same({code = 2001, message = "Unauthorized"}, response.body)
+            assert.are.same(200, authorize(username, userkey).status)
+        end)
+
+        it("deletes the user and all progress", function()
+            local username, userkey = "user1", "passwd123"
+            local doc1, doc2 = "document-one", "document-two"
+            register(username, userkey)
+            update(username, userkey, doc1, 0.32, "56", "my kpw")
+            update(username, userkey, doc2, 0.64, "112", "my kpw")
+
+            local response = delete_user(username, userkey)
+            assert.are.same(200, response.status)
+            assert.are.same({ deleted = true }, response.body)
+            assert.are.same(401, authorize(username, userkey).status)
+
+            -- Re-registering the username should start with no old progress.
+            assert.are.same(201, register(username, "new-password").status)
+            assert.are.same({}, get(username, "new-password", doc1).body)
+            assert.are.same({}, get(username, "new-password", doc2).body)
+        end)
+
+        it("does not treat glob characters in usernames as wildcards", function()
+            register("user*one", "password-one")
+            register("userXone", "password-two")
+            update("user*one", "password-one", "document-one", 0.32, "56", "device one")
+            update("userXone", "password-two", "document-two", 0.64, "112", "device two")
+
+            assert.are.same(200, delete_user("user*one", "password-one").status)
+            assert.are.same(200, authorize("userXone", "password-two").status)
+            assert.are.same("document-two",
+                get("userXone", "password-two", "document-two").body.document)
         end)
     end)
 
