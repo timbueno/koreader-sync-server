@@ -127,3 +127,28 @@ are secured by HTTPS (Hypertext Transfer Protocol Secure) connections.
 
 [licence-badge]:http://img.shields.io/badge/licence-AGPL-brightgreen.svg
 [dockerfile]:https://github.com/koreader/koreader-sync-server/blob/master/Dockerfile
+
+### Deleting an account
+
+`DELETE /users/me` accepts the normal `x-auth-user` / `x-auth-key` headers and
+returns `{ "deleted": true }`. The username and key must be nonempty and the
+username must not contain a colon. For an existing account the key must match.
+Deletion atomically checks authentication and removes all `user:<username>:`
+keys, including credentials and reading progress. An absent account returns HTTP
+404 with `{ "code": 2006, "message": "Account not found." }`; any orphaned user
+keys are removed. A wrong key for an existing account still returns HTTP 401,
+code 2001. Callers can treat the explicit account-not-found result as completed
+deletion when reconciling a lost response; a generic 404 or 401 is not sufficient.
+
+No request IDs, deletion markers, or credentials are retained by the server.
+The username may be registered again immediately, with empty progress. A deletion
+retry with the old password cannot delete a re-registered account with a different
+password. The server cannot distinguish generations that reuse both the same
+username and password. Applications needing this distinction should generate fresh
+credentials when creating another account.
+
+Progress updates check authentication at the Redis write so an earlier
+successful authorization cannot write after account removal. Registration uses
+`SETNX` to avoid overwriting credentials when registrations race. An independent
+signup arriving after deletion may create the username again; deletion does not
+reserve or permanently block usernames.
