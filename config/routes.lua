@@ -11,6 +11,7 @@ else
     v1:POST("/users/create", { controller = "syncs", action = "create_user_disabled" })
 end
 v1:GET("/users/auth", { controller = "syncs", action = "auth_user" })
+v1:PUT("/users/password", { controller = "syncs", action = "update_password" })
 v1:PUT("/syncs/progress", { controller = "syncs", action = "update_progress" })
 v1:GET("/syncs/progress/:document", { controller = "syncs", action = "get_progress" })
 v1:GET("/healthcheck", { controller = "syncs", action = "healthcheck" })
