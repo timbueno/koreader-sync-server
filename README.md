@@ -64,6 +64,45 @@ As you can see, the server responds over HTTPS using a self-signed certificate. 
       - 'traefik.http.services.kosync.loadbalancer.server.port=17200'
 ```
 
+Changing a password
+======================
+
+`PUT /users/password` changes an existing account's authentication key. Send the
+current username and key in the usual `x-auth-user` and `x-auth-key` headers, and
+send the replacement key in the JSON body:
+
+```http
+PUT /users/password
+Accept: application/vnd.koreader.v1+json
+Content-Type: application/json
+x-auth-user: <username>
+x-auth-key: <current authentication key>
+
+{"password":"<replacement authentication key>"}
+```
+
+Like registration, `password` is the client-derived authentication key. KOReader
+clients use the MD5 hash of the user's password; the server stores the supplied
+value without hashing it again. Both keys must be nonempty strings.
+
+Success returns HTTP 200 with `{"updated":true}`. The username, document progress,
+and other account records are unchanged. Clients must use the replacement key
+for subsequent requests; update the saved password on all connected readers.
+This endpoint requires the current key and does not provide forgotten-password
+recovery or create missing accounts.
+
+The current-key check and replacement run atomically in Redis. When competing
+requests supply the same old key and different new keys, only one can succeed.
+A retry using an old key after a successful change returns HTTP 401, just like an
+incorrect key or nonexistent user. If a response is lost, confirm the proposed
+replacement with `GET /users/auth` before attempting another change. Supplying the
+current key as the replacement is allowed and leaves authentication unchanged.
+
+Invalid replacement values return HTTP 403 (code 2003); Redis failures use the
+existing HTTP 502 errors. Use HTTPS when accessing this endpoint. Operators who
+manage password changes through a separate trusted API can restrict this route
+at their reverse proxy.
+
 Privacy and security
 ========
 
