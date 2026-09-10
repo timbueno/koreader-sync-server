@@ -20,6 +20,7 @@ local Errors = {
     [2003] = { status = 403, message = "Invalid request", },
     [2004] = { status = 403, message = "Field 'document' not provided.", },
     [2005] = { status = 402, message = "User registration is disabled.", },
+    [2006] = { status = 404, message = "Account not found.", },
 }
 
 return Errors

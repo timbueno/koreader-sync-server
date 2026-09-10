@@ -17,9 +17,49 @@ local SyncsController = {
     -- Do we really need to handle 'document' field specifically?
     error_document_field_missing = 2004,
     error_user_registration_disabled = 2005,
+    error_account_not_found = 2006,
 }
 
 local null = ngx.null
+
+-- Authenticate and delete in one operation. Distinguish an absent account from
+-- a wrong key so callers can reconcile retries without retaining tombstones.
+local delete_user_script = [[
+local current_key = redis.call("GET", KEYS[1])
+if current_key and current_key ~= ARGV[2] then
+    return 0
+end
+local cursor = "0"
+local prefix = ARGV[1]
+local keys = {}
+repeat
+    local result = redis.call("SCAN", cursor, "COUNT", 100)
+    cursor = result[1]
+    for _, key in ipairs(result[2]) do
+        if string.sub(key, 1, string.len(prefix)) == prefix then
+            table.insert(keys, key)
+        end
+    end
+until cursor == "0"
+
+for _, key in ipairs(keys) do
+    redis.call("DEL", key)
+end
+if not current_key then
+    return 2
+end
+return 1
+]]
+
+-- Check authentication at the write itself: a request that authorized before
+-- deletion must not recreate a document afterward.
+local update_progress_script = [[
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+redis.call("HSET", KEYS[2], unpack(ARGV, 2))
+return 1
+]]
 
 -- Authenticate and update in one operation so concurrent changes using the
 -- same current key cannot both succeed. Document keys are never touched.
@@ -78,24 +118,39 @@ function SyncsController:create_user()
         self:raise_error(self.error_invalid_fields)
     end
 
-    local user_key = string.format(self.user_key, self.request.body.username)
-    local user, err = redis:get(user_key)
-    if user == null then
-        ok, err = redis:set(user_key, self.request.body.password)
-        if not ok then
-            self:raise_error(self.error_internal)
-        else
-            return 201, { username = self.request.body.username }
-        end
-    elseif user then
+    local created, err = redis:setnx(string.format(self.user_key, self.request.body.username),
+        self.request.body.password)
+    if created == 0 then
         self:raise_error(self.error_user_exists)
-    else
+    elseif created ~= 1 then
         self:raise_error(self.error_internal)
     end
+    return 201, { username = self.request.body.username }
 end
 
 function SyncsController:create_user_disabled()
     self:raise_error(self.error_user_registration_disabled)
+end
+
+function SyncsController:delete_user()
+    local username = self.request.headers['x-auth-user']
+    local current_key = self.request.headers['x-auth-key']
+    if not is_valid_key_field(username) or not is_valid_field(current_key) then
+        self:raise_error(self.error_unauthorized_user)
+    end
+
+    local redis = self:getRedis()
+    local deleted, err = redis:eval(delete_user_script, 1,
+        string.format(self.user_key, username), "user:" .. username .. ":", current_key)
+    if deleted == 0 then
+        self:raise_error(self.error_unauthorized_user)
+    elseif deleted == 2 then
+        self:raise_error(self.error_account_not_found)
+    elseif deleted ~= 1 then
+        self:raise_error(self.error_internal)
+    end
+
+    return 200, { deleted = true }
 end
 
 function SyncsController:update_password()
@@ -191,14 +246,22 @@ function SyncsController:update_progress()
     local timestamp = os.time()
     if percentage and progress and device then
         local key = string.format(self.doc_key, username, doc)
-        local ok, err = redis:hmset(key, {
-            [self.percentage_field] = percentage,
-            [self.progress_field] = progress,
-            [self.device_field] = device,
-            [self.device_id_field] = device_id,
-            [self.timestamp_field] = timestamp,
-        })
-        if not ok then
+        local fields = {
+            self.request.headers['x-auth-key'],
+            self.percentage_field, percentage,
+            self.progress_field, progress,
+            self.device_field, device,
+            self.timestamp_field, timestamp,
+        }
+        if device_id ~= nil then
+            table.insert(fields, self.device_id_field)
+            table.insert(fields, device_id)
+        end
+        local updated, err = redis:eval(update_progress_script, 2,
+            string.format(self.user_key, username), key, unpack(fields))
+        if updated == 0 then
+            self:raise_error(self.error_unauthorized_user)
+        elseif updated ~= 1 then
             self:raise_error(self.error_internal)
         end
         return 200, {
