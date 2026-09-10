@@ -42,6 +42,20 @@ describe("SyncsController", function()
         return response
     end
 
+    local function delete_user(username, userkey)
+        local response = hit({
+            scheme = "https",
+            method = "DELETE",
+            path = "/users/me",
+            headers = {
+                ["x-auth-user"] = username,
+                ["x-auth-key"] = userkey,
+            },
+        })
+
+        return response
+    end
+
     local function get(username, userkey, document)
         local response = hit({
             scheme = "https",
@@ -108,6 +122,110 @@ describe("SyncsController", function()
             response = authorize(username, userkey)
             assert.are.same(200, response.status)
             assert.are.same("OK", response.body.authorized)
+        end)
+    end)
+
+    describe("#delete", function()
+        it("requires valid credentials", function()
+            local username, userkey = "user1", "passwd123"
+            register(username, userkey)
+
+            local response = delete_user(username, "wrong_password")
+            assert.are.same(401, response.status)
+            assert.are.same({code = 2001, message = "Unauthorized"}, response.body)
+            assert.are.same(200, authorize(username, userkey).status)
+        end)
+
+        it("deletes the user and all progress", function()
+            local username, userkey = "user1", "passwd123"
+            local doc1, doc2 = "document1", "document2"
+            register(username, userkey)
+            update(username, userkey, doc1, 0.32, "56", "my kpw")
+            update(username, userkey, doc2, 0.64, "112", "my kpw")
+
+            local response = delete_user(username, userkey)
+            assert.are.same(200, response.status)
+            assert.are.same({ deleted = true }, response.body)
+            assert.are.same(401, authorize(username, userkey).status)
+
+            -- Re-registering the username should start with no old progress.
+            assert.are.same(201, register(username, "new-password").status)
+            assert.are.same({}, get(username, "new-password", doc1).body)
+            assert.are.same({}, get(username, "new-password", doc2).body)
+        end)
+
+        it("does not treat glob characters in usernames as wildcards", function()
+            register("user*one", "password-one")
+            register("userXone", "password-two")
+            update("user*one", "password-one", "document1", 0.32, "56", "device one")
+            update("userXone", "password-two", "document2", 0.64, "112", "device two")
+
+            assert.are.same(200, delete_user("user*one", "password-one").status)
+            assert.are.same(200, authorize("userXone", "password-two").status)
+            assert.are.same("document2",
+                get("userXone", "password-two", "document2").body.document)
+        end)
+    end)
+
+    describe("#deletion retries", function()
+        local function client()
+            local connection = require("redis").connect("127.0.0.1", 6379)
+            connection:select(2)
+            return connection
+        end
+
+        it("distinguishes repeated and absent accounts without retaining records", function()
+            register("reader", "key")
+            update("reader", "key", "doc", 0.32, "56", "device")
+            assert.are.same(200, delete_user("reader", "key").status)
+            local retry = delete_user("reader", "key")
+            assert.are.same(404, retry.status)
+            assert.are.same({ code = 2006, message = "Account not found." }, retry.body)
+            assert.are.same(404, delete_user("missing", "key").status)
+            local redis = client()
+            assert.are.same({}, redis:keys("*"))
+            redis:quit()
+        end)
+
+        it("allows username reuse and rejects the old key after re-registration", function()
+            register("reader", "old-key")
+            delete_user("reader", "old-key")
+            assert.are.same(401, update("reader", "old-key", "doc", 0.3, "56", "device").status)
+            assert.are.same(201, register("reader", "new-key").status)
+            assert.are.same(401, delete_user("reader", "old-key").status)
+            assert.are.same(200, authorize("reader", "new-key").status)
+            assert.are.same({}, get("reader", "new-key", "doc").body)
+            assert.are.same(200, delete_user("reader", "new-key").status)
+            assert.are.same(201, register("reader", "new-key").status)
+        end)
+
+        it("requires well-formed authentication even when the account is absent", function()
+            for _, response in ipairs({ delete_user(nil, "key"), delete_user("", "key"),
+                delete_user("reader:other", "key"), delete_user("reader", nil), delete_user("reader", "") }) do
+                assert.are.same(401, response.status)
+            end
+        end)
+
+        it("cleans orphaned progress for an absent account without touching another user", function()
+            register("other", "other-key")
+            local redis = client()
+            redis:hmset("user:missing:document:doc", "progress", "56")
+            redis:quit()
+            assert.are.same(404, delete_user("missing", "key").status)
+            redis = client()
+            assert.are.same({}, redis:keys("user:missing:*"))
+            redis:quit()
+            assert.are.same(200, authorize("other", "other-key").status)
+        end)
+
+        it("fails closed on Redis type errors", function()
+            local redis = client()
+            redis:lpush("user:broken:key", "wrong-type")
+            redis:quit()
+            assert.are.same(502, delete_user("broken", "key").status)
+            redis = client()
+            assert.are.same({ "wrong-type" }, redis:lrange("user:broken:key", 0, -1))
+            redis:quit()
         end)
     end)
 

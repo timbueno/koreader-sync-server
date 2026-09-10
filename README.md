@@ -64,6 +64,21 @@ As you can see, the server responds over HTTPS using a self-signed certificate. 
       - 'traefik.http.services.kosync.loadbalancer.server.port=17200'
 ```
 
+Deleting an account
+===================
+
+`DELETE /users/me` uses the `x-auth-user` and `x-auth-key` headers to delete an
+account and all its reading progress. Success returns HTTP 200 with
+`{"deleted":true}`. Invalid credentials return HTTP 401 (code 2001).
+
+An absent account returns HTTP 404 (code 2006, `Account not found.`), after
+removing any orphaned user data. This specific response confirms deletion after a
+lost response; a generic 404 or 401 does not.
+
+No deletion records are retained. Usernames can be registered again immediately
+with empty progress. Use a different password when re-registering: a stale deletion
+request cannot be distinguished from a new one if both credentials are reused.
+
 Privacy and security
 ========
 
