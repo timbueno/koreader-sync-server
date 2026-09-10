@@ -57,7 +57,7 @@ local update_progress_script = [[
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then
     return 0
 end
-redis.call("HMSET", KEYS[2], unpack(ARGV, 2))
+redis.call("HSET", KEYS[2], unpack(ARGV, 2))
 return 1
 ]]
 
